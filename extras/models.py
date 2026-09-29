@@ -7,7 +7,7 @@ from pydantic import SecretStr
 load_dotenv()
 
 geniric_model = ChatOpenAI(
-    model="gemini-3.1-flash-lite",
+    model="default",
     api_key=SecretStr(os.environ["LLM7_API_KEY"]),
     base_url="https://api.llm7.io/v1",
     use_responses_api=False
