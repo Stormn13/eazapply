@@ -1,7 +1,7 @@
 
 import requests
 from bs4 import BeautifulSoup
-from states import ResumeState
+from extras.states import ResumeState
 
 
 def webscrap(state: ResumeState):

@@ -1,5 +1,5 @@
-from states import ResumeState
-from models import geniric_model, googe_model
+from extras.states import ResumeState
+from extras.models import geniric_model, googe_model
 
 def jd_extraction(state: ResumeState):
     raw_text = state['raw_website_text'] # type: ignore

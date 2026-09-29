@@ -1,9 +1,9 @@
 #imports
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict
-import webscrap
-import jd_extraction
-from states import ResumeState
+import nodes.webscrap as webscrap
+import nodes.jd_extraction as jd_extraction
+from extras.states import ResumeState
 #this is the state schema
 #define error codes
 # 1 - the link for the jd doesn't exist
