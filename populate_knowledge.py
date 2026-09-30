@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from difflib import SequenceMatcher
 import hashlib
 import json
 import math
@@ -674,15 +675,243 @@ def summarize_changes(manifest: dict[str, Any], source_results: list[tuple[dict[
     return summary
 
 
+PREVIEW_GROUPS = (
+    ("Projects", "project"),
+    ("Experience", "experience"),
+    ("Skills", "skill"),
+    ("Education", "education"),
+    ("Achievements", "achievement"),
+    ("Certifications", "certification"),
+    ("Activities", "activity"),
+    ("Profile", "profile"),
+)
+SKILL_NAME_ALIASES = {
+    "ai_ml": "machine-learning",
+    "ai_ml_and_data_science": "machine-learning",
+    "cpp": "c-plus-plus",
+    "c_plus_plus": "c-plus-plus",
+    "js": "javascript",
+    "nodejs": "node-js",
+    "node_js": "node-js",
+    "reactjs": "react",
+    "react_js": "react",
+    "ts": "typescript",
+}
+
+
+def record_field(record: CareerRecord, *names: str) -> Any:
+    normalized_fields = {normalize_name(key).replace("-", "_"): value for key, value in record.fields.items()}
+    for name in names:
+        key = normalize_name(name).replace("-", "_")
+        if key in normalized_fields:
+            return normalized_fields[key]
+    return None
+
+
+def preview_record_title(record: CareerRecord) -> str:
+    return record.title or str(record_field(record, "name", "skill", "role") or "Untitled record")
+
+
+def preview_record_summary(record: CareerRecord) -> str:
+    summary = record_field(record, "summary", "description", "overview", "details", "claim", "impact")
+    if summary is not None:
+        return json.dumps(summary, ensure_ascii=False) if not isinstance(summary, str) else summary
+    for evidence in record.evidence:
+        if evidence.extracted_claim:
+            return evidence.extracted_claim
+    return "Not provided by extraction."
+
+
+def preview_record_dates(record: CareerRecord) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in record.fields.items()
+        if any(token in key.casefold() for token in ("date", "year", "duration", "start", "end"))
+    }
+
+
+def preview_records(source_results: list[tuple[dict[str, Any], list[CareerRecord]]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for source_meta, records in source_results:
+        source_file = Path(source_meta["source_file"]).name
+        for record in records:
+            entries.append({"record": record, "source_file": source_file})
+    return entries
+
+
+def print_record_preview(entries: list[dict[str, Any]]) -> None:
+    print("\n=== Extracted Record Preview ===")
+    for group_name, record_type in PREVIEW_GROUPS:
+        grouped = [entry for entry in entries if entry["record"].record_type == record_type]
+        print(f"\n{group_name} ({len(grouped)})")
+        for index, entry in enumerate(grouped, 1):
+            record: CareerRecord = entry["record"]
+            print(f"  {index}. {preview_record_title(record)}")
+            print(f"     record_type: {record.record_type}")
+            print(f"     source: {entry['source_file']}")
+            print(f"     status: {record.status}")
+            print(f"     summary: {preview_record_summary(record)}")
+            dates = preview_record_dates(record)
+            if dates:
+                print(f"     dates: {json.dumps(dates, ensure_ascii=False)}")
+            if record.fields:
+                print("     fields:")
+                for key, value in record.fields.items():
+                    print(f"       - {key}: {json.dumps(value, ensure_ascii=False)}")
+            original_types = record.normalization_original_values.get("record_type", [])
+            if original_types:
+                print(f"     normalized_from: {', '.join(original_types)}")
+            original_statuses = record.normalization_original_values.get("status", [])
+            if original_statuses:
+                print(f"     original_status: {', '.join(original_statuses)}")
+
+
+def duplicate_entity_name(record: CareerRecord) -> str:
+    if record.record_type == "skill":
+        name = str(record_field(record, "name", "skill", "technology") or record.title)
+        normalized = normalize_name(name).replace("-", "_")
+        return SKILL_NAME_ALIASES.get(normalized, normalize_name(name))
+    return normalize_name(record.title)
+
+
+def duplicate_organization(record: CareerRecord) -> str:
+    value = record_field(record, "organization", "company", "employer", "institution", "club")
+    return normalize_name(str(value)) if value else ""
+
+
+def records_may_be_same_entity(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_record: CareerRecord = left["record"]
+    right_record: CareerRecord = right["record"]
+    if left_record.record_type != right_record.record_type or left["source_file"] == right["source_file"]:
+        return False
+
+    if left_record.record_type == "experience":
+        left_org = duplicate_organization(left_record)
+        right_org = duplicate_organization(right_record)
+        if left_org and right_org and left_org != right_org:
+            return False
+
+    left_name = duplicate_entity_name(left_record)
+    right_name = duplicate_entity_name(right_record)
+    if left_name and left_name == right_name:
+        return True
+    if min(len(left_name), len(right_name)) >= 8 and SequenceMatcher(None, left_name, right_name).ratio() >= 0.9:
+        return True
+    return False
+
+
+def duplicate_field_differences(entries: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
+    values_by_key: dict[str, list[str]] = {"title": []}
+    for entry in entries:
+        record: CareerRecord = entry["record"]
+        values_by_key["title"].append(f"{entry['source_file']}: {record.title}")
+        for key, value in record.fields.items():
+            values_by_key.setdefault(key, []).append(f"{entry['source_file']}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+
+    differences = []
+    for key, values in values_by_key.items():
+        distinct = {value.split(": ", 1)[1] for value in values}
+        if len(distinct) > 1:
+            differences.append((key, values))
+    return differences
+
+
+def find_duplicate_groups(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    parents = list(range(len(entries)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for left_index in range(len(entries)):
+        for right_index in range(left_index + 1, len(entries)):
+            if records_may_be_same_entity(entries[left_index], entries[right_index]):
+                union(left_index, right_index)
+
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for index, entry in enumerate(entries):
+        groups.setdefault(find(index), []).append(entry)
+    return [
+        group for group in groups.values()
+        if len({entry["source_file"] for entry in group}) > 1
+    ]
+
+
+def print_duplicate_analysis(entries: list[dict[str, Any]]) -> None:
+    groups = find_duplicate_groups(entries)
+    print(f"\n=== Suspected Cross-Document Duplicates ({len(groups)}) ===")
+    for index, group in enumerate(groups, 1):
+        record_type = group[0]["record"].record_type
+        titles = ", ".join(sorted({entry["record"].title for entry in group}))
+        print(f"\n{index}. {record_type}: {titles}")
+        print("   Why: same canonical type with identical or highly similar normalized entity names.")
+        print("   Records:")
+        for entry in group:
+            record: CareerRecord = entry["record"]
+            print(f"   - {entry['source_file']}: {record.title} [{record.record_id}]")
+        differences = duplicate_field_differences(group)
+        if differences:
+            print("   Differing fields:")
+            for key, values in differences:
+                print(f"   - {key}: {'; '.join(values)}")
+        else:
+            print("   Differing fields: none among extracted titles/structured fields.")
+
+
+def classification_warnings(entries: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+    warnings: list[tuple[dict[str, Any], str]] = []
+    role_pattern = r"\b(head|lead|leader|president|chair|captain|officer|intern|engineer|manager|director)\b"
+    award_pattern = r"\b(award|competition|contest|hackathon|prize|winner|won|finalist|medal)\b"
+    project_pattern = r"\b(project|built|developed|application|app|game|prototype|platform)\b"
+    club_pattern = r"\b(club|society|student organization|student organisation)\b"
+
+    for entry in entries:
+        record: CareerRecord = entry["record"]
+        context = " ".join([record.title, preview_record_summary(record), json.dumps(record.fields, ensure_ascii=False)]).casefold()
+        title_context = record.title.casefold()
+        if record.record_type == "experience" and re.search(award_pattern, context):
+            warnings.append((entry, "Experience contains award/competition language; verify it belongs under achievements."))
+        if record.record_type == "experience" and re.search(project_pattern, context) and not record_field(record, "organization", "company", "employer"):
+            warnings.append((entry, "Experience contains project/build language without an employer field; verify it is not a project."))
+        if record.record_type == "project" and re.search(role_pattern, title_context):
+            warnings.append((entry, "Project title resembles a job or leadership role; verify it is not experience."))
+        if record.record_type == "project" and any(normalize_name(key) in {"proficiency", "skill_level", "years_experience"} for key in record.fields):
+            warnings.append((entry, "Project has skill/proficiency fields; verify it is not a skill record."))
+        if record.record_type not in {"experience", "activity"} and re.search(club_pattern, context) and re.search(role_pattern, context):
+            warnings.append((entry, "Club leadership/role signals conflict with this record type; review experience vs activity classification."))
+    return warnings
+
+
+def print_classification_warnings(entries: list[dict[str, Any]]) -> None:
+    warnings = classification_warnings(entries)
+    print(f"\n=== Suspicious Classifications ({len(warnings)}) ===")
+    if not warnings:
+        print("No deterministic classification warnings found.")
+        return
+    for entry, reason in warnings:
+        record: CareerRecord = entry["record"]
+        print(f"- {entry['source_file']}: {record.record_type} / {record.title}: {reason}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest user career source documents into the OKF knowledge base.")
     parser.add_argument("--source-dir", default=None, help="Override the source directory containing career documents.")
     parser.add_argument("--knowledge-dir", default=None, help="Override the directory where OKF knowledge records and the manifest are stored.")
     parser.add_argument("--dry-run", action="store_true", help="Inspect and report what would change without updating the knowledge base.")
+    parser.add_argument("--preview", action="store_true", help="Run read-only extraction and print grouped records, duplicate candidates, and classification warnings.")
     args = parser.parse_args()
+    read_only = args.dry_run or args.preview
 
     configure_paths(args.source_dir, args.knowledge_dir)
-    if not args.dry_run:
+    if not read_only:
         ensure_directories()
 
     manifest = load_manifest()
@@ -696,7 +925,7 @@ def main() -> None:
         current_hash = file_hash(path)
         previous = next((entry for entry in manifest.get("sources", []) if entry.get("source_file") == str(path.relative_to(ROOT))), None)
 
-        if previous and previous.get("source_hash") == current_hash and previous.get("status") == "processed":
+        if not args.preview and previous and previous.get("source_hash") == current_hash and previous.get("status") == "processed":
             print("Action: source unchanged; skipping extraction.")
             results.append((
                 {
@@ -713,7 +942,7 @@ def main() -> None:
 
         print("Action: extracting career information...")
         try:
-            source_info, records = ingest_document(path, args.dry_run)
+            source_info, records = ingest_document(path, read_only)
             results.append((source_info, records))
             print(f"✓ Extracted information from {path.name}")
         except (Exception, KeyboardInterrupt) as exc:  # pragma: no cover - behavior is intentionally resilient
@@ -742,8 +971,14 @@ def main() -> None:
                 [],
             ))
 
+    if args.preview:
+        entries = preview_records(results)
+        print_record_preview(entries)
+        print_duplicate_analysis(entries)
+        print_classification_warnings(entries)
+
     manifest = json.loads(json.dumps(original_manifest))
-    if not args.dry_run:
+    if not read_only:
         manifest["last_updated"] = now_utc()
         updated_sources = {entry.get("source_file"): entry for entry in manifest.get("sources", [])}
         for source_meta, _ in results:
@@ -761,7 +996,7 @@ def main() -> None:
             if source_meta.get("error"):
                 updated_sources[source_meta["source_file"]]["error"] = source_meta["error"]
         manifest["sources"] = list(updated_sources.values())
-    if not args.dry_run:
+    if not read_only:
         write_manifest(manifest)
 
     summary = summarize_changes(original_manifest, results)
@@ -779,8 +1014,9 @@ def main() -> None:
     print(f"- New skills: {summary['new_skills']}")
     print(f"- Updated skills: {summary['updated_skills']}")
     print(f"- Conflicts requiring verification: {summary['conflicts_requiring_verification']}")
-    if args.dry_run:
-        print("No files were modified because this was a dry run.")
+    if read_only:
+        message = "preview" if args.preview else "dry run"
+        print(f"No files were modified because this was a {message}.")
 
 
 if __name__ == "__main__":

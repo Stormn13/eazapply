@@ -109,5 +109,56 @@ class ExtractionNormalizationTests(unittest.TestCase):
         self.assertEqual(record.status, "active")
 
 
+class PreviewAnalysisTests(unittest.TestCase):
+    def entry(self, record: ingestion.CareerRecord, source_file: str) -> dict:
+        return {"record": record, "source_file": source_file}
+
+    def test_duplicate_group_reports_matching_projects_and_field_differences(self) -> None:
+        first = ingestion.CareerRecord(
+            record_type="project",
+            record_id="project-a",
+            title="Just Divide",
+            fields={"description": "A React puzzle game"},
+        )
+        second = ingestion.CareerRecord(
+            record_type="project",
+            record_id="project-b",
+            title="Just Divide",
+            fields={"description": "A React and TypeScript puzzle game"},
+        )
+
+        groups = ingestion.find_duplicate_groups([
+            self.entry(first, "resume-a.pdf"),
+            self.entry(second, "resume-b.pdf"),
+        ])
+
+        self.assertEqual(len(groups), 1)
+        differences = ingestion.duplicate_field_differences(groups[0])
+        self.assertIn("description", {key for key, _ in differences})
+
+    def test_skill_aliases_are_detected_across_documents(self) -> None:
+        first = ingestion.CareerRecord(record_type="skill", record_id="s1", title="AI/ML")
+        second = ingestion.CareerRecord(record_type="skill", record_id="s2", title="Machine Learning")
+
+        groups = ingestion.find_duplicate_groups([
+            self.entry(first, "resume-a.pdf"),
+            self.entry(second, "resume-b.pdf"),
+        ])
+
+        self.assertEqual(len(groups), 1)
+
+    def test_classification_warning_flags_award_framed_as_experience(self) -> None:
+        record = ingestion.CareerRecord(
+            record_type="experience",
+            record_id="award-as-role",
+            title="Innovation Award",
+            fields={"description": "Won a regional competition"},
+        )
+
+        warnings = ingestion.classification_warnings([self.entry(record, "resume.pdf")])
+
+        self.assertTrue(any("achievements" in warning for _, warning in warnings))
+
+
 if __name__ == "__main__":
     unittest.main()
