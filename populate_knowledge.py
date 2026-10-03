@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from difflib import SequenceMatcher
 import hashlib
 import json
 import math
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +63,7 @@ class CareerRecord(BaseModel):
     record_id: str
     title: str
     status: Literal["draft", "active", "needs_verification"] = "draft"
+    normalized_from: str | None = None
     fields: dict[str, Any] = Field(default_factory=dict)
     evidence: list[SourceEvidence] = Field(default_factory=list)
     conflicts: list[str] = Field(default_factory=list)
@@ -125,6 +126,46 @@ def normalize_position_type(record: dict[str, Any]) -> str:
     return "experience"
 
 
+def normalize_summary_type(record: dict[str, Any]) -> str:
+    context = position_context_text(record)
+    explicit_profile = (
+        r"\bprofessional summary\b", r"\bprofile summary\b", r"\bcareer summary\b",
+        r"\bpersonal profile\b", r"\bcareer objective\b", r"\babout me\b",
+    )
+    if any(re.search(pattern, context) for pattern in explicit_profile):
+        return "profile"
+    if re.search(r"\b(?:student|engineer|developer|professional)\b.{0,100}\b(?:experience|skilled|specializ|seeking|passionate)\b", context):
+        return "profile"
+
+    classifications = (
+        ("certification", r"\b(certification|certified|credential)\b"),
+        ("education", r"\b(university|college|bachelor|master|degree|coursework|graduat(?:ed|ion))\b"),
+        ("achievement", r"\b(award|competition|contest|hackathon|prize|winner|won|finalist|medal)\b"),
+        ("project", r"\b(project|prototype|application|app|game|built|developed|created)\b"),
+        ("experience", r"\b(internship|employer|worked at|position|leadership|manager|engineer at)\b"),
+        ("activity", r"\b(volunteer|club member|student organization|student organisation|extracurricular)\b"),
+        ("skill", r"\b(skills?|programming languages|tools|proficien(?:t|cy)|technologies)\b"),
+    )
+    matches = [record_type for record_type, pattern in classifications if re.search(pattern, context)]
+    if len(matches) == 1:
+        return matches[0]
+    raise ValueError(
+        "Unsupported record_type 'summary': extracted summary content does not identify a canonical record type."
+    )
+
+
+def normalize_profile_urls(value: Any, field_name: str = "") -> Any:
+    if isinstance(value, dict):
+        return {key: normalize_profile_urls(item, str(key)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_profile_urls(item, field_name) for item in value]
+    if isinstance(value, str) and "github" in field_name.casefold():
+        normalized = value.strip()
+        normalized = re.sub(r"^/github(?=github\.com/)", "", normalized, flags=re.IGNORECASE)
+        return normalized.lstrip("/")
+    return value
+
+
 def normalize_extraction_payload(data: Any) -> Any:
     if not isinstance(data, dict) or not isinstance(data.get("records"), list):
         return data
@@ -136,11 +177,12 @@ def normalize_extraction_payload(data: Any) -> Any:
     canonical_statuses = {"draft", "active", "needs_verification"}
     record_type_aliases = {
         "person": "profile",
+        "leadership": "experience",
+        "position": "experience",
+        "position_of_responsibility": "experience",
         "competition": "achievement",
         "award": "achievement",
         "awards": "achievement",
-        "leadership": "experience",
-        "position_of_responsibility": "experience",
     }
 
     for index, record in enumerate(data["records"]):
@@ -152,8 +194,8 @@ def normalize_extraction_payload(data: Any) -> Any:
         if isinstance(raw_record_type, str):
             normalized_type = normalize_category_token(raw_record_type)
             record_type = record_type_aliases.get(normalized_type, normalized_type)
-            if normalized_type == "position":
-                record_type = normalize_position_type(record)
+            if normalized_type == "summary":
+                record_type = normalize_summary_type(record)
             if record_type not in canonical_record_types:
                 raise ValueError(
                     f"Unsupported record_type {raw_record_type!r} in extracted record {index}; "
@@ -161,7 +203,10 @@ def normalize_extraction_payload(data: Any) -> Any:
                 )
             if raw_record_type != record_type:
                 original_values["record_type"] = raw_record_type
+                record["normalized_from"] = raw_record_type
             record["record_type"] = record_type
+            if record_type == "profile" and isinstance(record.get("fields"), dict):
+                record["fields"] = normalize_profile_urls(record["fields"])
 
         raw_status = record.get("status")
         if isinstance(raw_status, str):
@@ -301,6 +346,27 @@ def parse_json_payload(raw_text: str) -> CareerExtractionBundle:
     return CareerExtractionBundle.model_validate(data)
 
 
+def add_source_evidence(bundle: CareerExtractionBundle, source_path: Path, source_hash: str) -> None:
+    for record in bundle.records:
+        claim = json.dumps(
+            {"title": record.title, "fields": record.fields},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if any(
+            item.source_file == source_path.name
+            and item.source_hash == source_hash
+            and item.extracted_claim == claim
+            for item in record.evidence
+        ):
+            continue
+        record.evidence.append(SourceEvidence(
+            source_file=source_path.name,
+            source_hash=source_hash,
+            extracted_claim=claim,
+        ))
+
+
 def llm_request_settings() -> tuple[float, int]:
     try:
         timeout_seconds = float(os.environ.get("LLM_TIMEOUT_SECONDS", str(DEFAULT_LLM_TIMEOUT_SECONDS)))
@@ -322,6 +388,13 @@ def is_retryable_llm_error(exc: Exception) -> bool:
         return True
     if isinstance(exc, APIStatusError):
         return exc.status_code in {408, 409, 429} or exc.status_code >= 500
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status_code, int):
+        return status_code in {408, 409, 429} or status_code >= 500
+    if getattr(exc, "retryable", False) is True:
+        return True
     return False
 
 
@@ -378,19 +451,36 @@ Source hash: {source_hash}
 Document content:
 {text[:20000]}
 """
-    for attempt in range(retries + 1):
-        try:
-            response = model.invoke(prompt)
-            content = getattr(response, "content", str(response))
-            return parse_json_payload(str(content))
-        except Exception as exc:
-            if attempt >= retries or not is_retryable_llm_error(exc):
-                raise
-            delay_seconds = min(2 ** attempt, 4)
-            print(f"  Transient LLM error ({type(exc).__name__}); retrying in {delay_seconds} seconds ({attempt + 1}/{retries}).")
-            time.sleep(delay_seconds)
+    def invoke_with_transient_retries(request_prompt: str) -> str:
+        for attempt in range(retries + 1):
+            try:
+                response = model.invoke(request_prompt)
+                return str(getattr(response, "content", str(response)))
+            except Exception as exc:
+                if attempt >= retries or not is_retryable_llm_error(exc):
+                    raise
+                delay_seconds = min(2 ** attempt, 4)
+                print(f"  Transient LLM error ({type(exc).__name__}); retrying in {delay_seconds} seconds ({attempt + 1}/{retries}).")
+                time.sleep(delay_seconds)
+        raise RuntimeError("LLM extraction ended without a result.")
 
-    raise RuntimeError("LLM extraction ended without a result.")
+    content = invoke_with_transient_retries(prompt)
+    try:
+        bundle = parse_json_payload(content)
+    except json.JSONDecodeError:
+        repair_prompt = f"""
+The previous response was not valid JSON. Return a corrected response as valid JSON only.
+Do not add, remove, or invent facts. Use the same schema and preserve the previous response's content.
+Do not include markdown fences or explanations.
+
+Previous response:
+{content}
+"""
+        repaired_content = invoke_with_transient_retries(repair_prompt)
+        bundle = parse_json_payload(repaired_content)
+
+    add_source_evidence(bundle, source_path, source_hash)
+    return bundle
 
 
 def parse_existing_markdown_records() -> dict[str, list[dict[str, Any]]]:
@@ -478,6 +568,7 @@ def parse_existing_markdown_records() -> dict[str, list[dict[str, Any]]]:
                 "record_id": info.get("record_id", path.stem),
                 "title": info.get("title", path.stem),
                 "status": info.get("status", "draft"),
+                "normalized_from": info.get("normalized_from"),
                 "fields": fields,
                 "evidence": evidence,
                 "conflicts": conflicts,
@@ -507,6 +598,7 @@ def render_markdown(record: CareerRecord) -> str:
         f"title: {record.title}",
         f"record_id: {record.record_id}",
         f"status: {record.status}",
+        *( [f"normalized_from: {record.normalized_from}"] if record.normalized_from else [] ),
         f"updated_at: {now_utc()}",
         "---",
         "",
@@ -559,14 +651,50 @@ def merge_record(existing: CareerRecord | None, incoming: CareerRecord) -> Caree
         return incoming
 
     merged = existing.model_copy(deep=True)
+    description_fields = {"description", "summary", "overview", "details", "impact"}
+
+    def merge_value(current: Any, incoming_value: Any, path: str) -> tuple[Any, list[str]]:
+        if current == incoming_value:
+            return current, []
+        if current is None:
+            return incoming_value, []
+        if incoming_value is None:
+            return current, []
+        if isinstance(current, list) and isinstance(incoming_value, list):
+            values = list(current)
+            known = {json.dumps(value, ensure_ascii=False, sort_keys=True) for value in values}
+            for value in incoming_value:
+                key = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                if key not in known:
+                    values.append(value)
+                    known.add(key)
+            return values, []
+        if isinstance(current, dict) and isinstance(incoming_value, dict):
+            values = dict(current)
+            conflicts: list[str] = []
+            for child_key, child_value in incoming_value.items():
+                if child_key not in values:
+                    values[child_key] = child_value
+                    continue
+                values[child_key], child_conflicts = merge_value(
+                    values[child_key], child_value, f"{path}.{child_key}"
+                )
+                conflicts.extend(child_conflicts)
+            return values, conflicts
+        if path.rsplit(".", 1)[-1].casefold() in description_fields:
+            return current, []
+        return current, [path]
+
     for key, value in incoming.fields.items():
-        if key in merged.fields and merged.fields[key] != value:
-            conflict = f"Field '{key}' has conflicting values across sources; the existing value was retained pending verification."
+        if key not in merged.fields:
+            merged.fields[key] = value
+            continue
+        merged.fields[key], conflicting_paths = merge_value(merged.fields[key], value, key)
+        for path in conflicting_paths:
+            conflict = f"Field '{path}' has conflicting values across sources; the existing value was retained pending verification."
             if conflict not in merged.conflicts:
                 merged.conflicts.append(conflict)
             merged.status = "needs_verification"
-        else:
-            merged.fields[key] = value
     known_evidence = {(item.source_file, item.source_hash, item.extracted_claim) for item in merged.evidence}
     for item in incoming.evidence:
         evidence_key = (item.source_file, item.source_hash, item.extracted_claim)
@@ -580,6 +708,8 @@ def merge_record(existing: CareerRecord | None, incoming: CareerRecord) -> Caree
         merged.normalization_original_values[key] = list(dict.fromkeys(existing_values + values))
     if incoming.status == "needs_verification":
         merged.status = "needs_verification"
+    if merged.normalized_from is None:
+        merged.normalized_from = incoming.normalized_from
     return merged
 
 
@@ -588,10 +718,14 @@ def ingest_document(path: Path, dry_run: bool) -> tuple[dict[str, Any], list[Car
     text = extract_text_from_file(path)
     bundle = llm_extract_structured_data(path, source_hash, text)
 
+    source_file = path.name
+    extracted_entries = [{"record": record, "source_file": source_file} for record in bundle.records]
+    records = [entry["record"] for entry in canonicalize_entries(extracted_entries)]
+
     existing = parse_existing_markdown_records()
     processed: list[CareerRecord] = []
     record_changes: list[dict[str, Any]] = []
-    for record in bundle.records:
+    for record in records:
         match = find_existing_match(record, existing)
         if match:
             existing_record = CareerRecord(
@@ -603,6 +737,7 @@ def ingest_document(path: Path, dry_run: bool) -> tuple[dict[str, Any], list[Car
                 evidence=match.get("evidence", []),
                 conflicts=match.get("conflicts", []),
                 normalization_original_values=match.get("normalization_original_values", {}),
+                normalized_from=match.get("normalized_from"),
             )
             merged = merge_record(existing_record, record)
             processed.append(merged)
@@ -768,9 +903,29 @@ def print_record_preview(entries: list[dict[str, Any]]) -> None:
 
 def duplicate_entity_name(record: CareerRecord) -> str:
     if record.record_type == "skill":
-        name = str(record_field(record, "name", "skill", "technology") or record.title)
+        category = record_field(record, "category")
+        title_label = record.title.split(":", 1)[0].strip()
+        person_name = record_field(record, "full_name", "person_name", "name")
+        if person_name and title_label.casefold().startswith(str(person_name).casefold()):
+            title_label = title_label[len(str(person_name)):].lstrip(" -:|")
+        title_key = normalize_name(title_label).replace("-", "_")
+        category_key = normalize_name(str(category or "")).replace("-", "_")
+        context = " ".join((title_label, str(category or ""))).casefold()
+        if ("program" in context and "language" in context) or category_key == "programming":
+            return "programming-languages"
+        if title_key in {"tool", "tools"}:
+            return "tools"
+        name = str(
+            record_field(record, "name", "skill", "technology")
+            or (category if title_key in {"", "skill", "skills"} else title_label)
+            or record.title
+        )
         normalized = normalize_name(name).replace("-", "_")
         return SKILL_NAME_ALIASES.get(normalized, normalize_name(name))
+    if record.record_type == "profile":
+        name = record_field(record, "full_name", "person_name", "name")
+        if name:
+            return normalize_name(str(name))
     return normalize_name(record.title)
 
 
@@ -784,20 +939,7 @@ def records_may_be_same_entity(left: dict[str, Any], right: dict[str, Any]) -> b
     right_record: CareerRecord = right["record"]
     if left_record.record_type != right_record.record_type or left["source_file"] == right["source_file"]:
         return False
-
-    if left_record.record_type == "experience":
-        left_org = duplicate_organization(left_record)
-        right_org = duplicate_organization(right_record)
-        if left_org and right_org and left_org != right_org:
-            return False
-
-    left_name = duplicate_entity_name(left_record)
-    right_name = duplicate_entity_name(right_record)
-    if left_name and left_name == right_name:
-        return True
-    if min(len(left_name), len(right_name)) >= 8 and SequenceMatcher(None, left_name, right_name).ratio() >= 0.9:
-        return True
-    return False
+    return entity_key(left_record) == entity_key(right_record)
 
 
 def duplicate_field_differences(entries: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
@@ -816,33 +958,80 @@ def duplicate_field_differences(entries: list[dict[str, Any]]) -> list[tuple[str
     return differences
 
 
+def entity_key(record: CareerRecord) -> tuple[str, ...]:
+    if record.record_type == "experience":
+        role = record_field(record, "role", "position", "job_title")
+        organization = duplicate_organization(record)
+        if role and organization:
+            return record.record_type, normalize_name(str(role)), organization
+        return record.record_type, normalize_name(record.title), organization
+    return record.record_type, duplicate_entity_name(record)
+
+
+def canonical_record_id(record: CareerRecord) -> str:
+    identity_key = entity_key(record)
+    identity = json.dumps(identity_key, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:10]
+    slug = normalize_name(identity_key[1]) or record.record_type
+    return f"{record.record_type}-{slug}-{digest}"
+
+
+def normalize_skill_record(record: CareerRecord) -> CareerRecord:
+    normalized = record.model_copy(deep=True)
+    list_field_names = {"skills", "languages", "programming_languages", "tools", "values"}
+    list_values: list[Any] = []
+    fields = dict(normalized.fields)
+    for key in list(fields):
+        if normalize_name(key).replace("-", "_") in list_field_names and isinstance(fields[key], list):
+            list_values.extend(fields.pop(key))
+
+    if list_values:
+        unique_values: list[Any] = []
+        known = set()
+        for value in list_values:
+            encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            if encoded not in known:
+                known.add(encoded)
+                unique_values.append(value)
+        fields["skills"] = unique_values
+
+    category = duplicate_entity_name(normalized)
+    if category == "programming-languages":
+        fields["category"] = "Programming Languages"
+    elif category == "tools":
+        fields["category"] = "Tools"
+    normalized.fields = fields
+    return normalized
+
+
+def group_entity_entries(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for entry in entries:
+        groups.setdefault(entity_key(entry["record"]), []).append(entry)
+    return list(groups.values())
+
+
 def find_duplicate_groups(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    parents = list(range(len(entries)))
-
-    def find(index: int) -> int:
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = parents[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root != right_root:
-            parents[right_root] = left_root
-
-    for left_index in range(len(entries)):
-        for right_index in range(left_index + 1, len(entries)):
-            if records_may_be_same_entity(entries[left_index], entries[right_index]):
-                union(left_index, right_index)
-
-    groups: dict[int, list[dict[str, Any]]] = {}
-    for index, entry in enumerate(entries):
-        groups.setdefault(find(index), []).append(entry)
     return [
-        group for group in groups.values()
-        if len({entry["source_file"] for entry in group}) > 1
+        group for group in group_entity_entries(entries)
+        if len(group) > 1 and len({entry["source_file"] for entry in group}) > 1
     ]
+
+
+def canonicalize_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    canonical: list[dict[str, Any]] = []
+    for group in group_entity_entries(entries):
+        initial_record = group[0]["record"]
+        merged = normalize_skill_record(initial_record) if initial_record.record_type == "skill" else initial_record.model_copy(deep=True)
+        for entry in group[1:]:
+            incoming = entry["record"]
+            if incoming.record_type == "skill":
+                incoming = normalize_skill_record(incoming)
+            merged = merge_record(merged, incoming)
+        merged.record_id = canonical_record_id(merged)
+        sources = sorted({entry["source_file"] for entry in group})
+        canonical.append({"record": merged, "source_file": sources[0], "source_files": sources})
+    return canonical
 
 
 def print_duplicate_analysis(entries: list[dict[str, Any]]) -> None:
@@ -901,7 +1090,60 @@ def print_classification_warnings(entries: list[dict[str, Any]]) -> None:
         print(f"- {entry['source_file']}: {record.record_type} / {record.title}: {reason}")
 
 
+def print_canonical_analysis(
+    source_results: list[tuple[dict[str, Any], list[CareerRecord]]],
+    extracted_entries: list[dict[str, Any]],
+) -> None:
+    canonical = canonicalize_entries(extracted_entries)
+    counts: dict[str, int] = {}
+    for entry in canonical:
+        record: CareerRecord = entry["record"]
+        counts[record.record_type] = counts.get(record.record_type, 0) + 1
+
+    print("\n=== Extraction Results ===")
+    for source_meta, records in source_results:
+        status = "success" if source_meta["status"] in {"processed", "dry_run"} else source_meta["status"]
+        print(f"- {Path(source_meta['source_file']).name}: {status}; normalized records={len(records)}")
+
+    print("\n=== Canonical Entities After Deduplication ===")
+    print(f"Total entities: {len(canonical)}")
+    for record_type in sorted(counts):
+        print(f"- {record_type}: {counts[record_type]}")
+
+    merged_entities = [entry for entry in canonical if len(entry["source_files"]) > 1]
+    print(f"Merged entities: {len(merged_entities)}")
+    evidence_references = 0
+    for entry in merged_entities:
+        record: CareerRecord = entry["record"]
+        evidence_sources = sorted({item.source_file for item in record.evidence})
+        evidence_references += len(record.evidence)
+        print(f"- {record.record_type}: {record.title} [{record.record_id}]")
+        print(f"  sources: {', '.join(entry['source_files'])}")
+        print(f"  evidence references: {len(record.evidence)} ({', '.join(evidence_sources) or 'none'})")
+        print(f"  canonical fields: {json.dumps(record.fields, ensure_ascii=False, sort_keys=True)}")
+
+    conflicts = [entry["record"] for entry in canonical if entry["record"].status == "needs_verification"]
+    print(f"Conflicts requiring verification: {len(conflicts)}")
+    for record in conflicts:
+        print(f"- {record.record_type}: {record.title}: {'; '.join(record.conflicts)}")
+    print(f"Source evidence retained on merged entities: {evidence_references} evidence items")
+
+    failures = [meta for meta, _ in source_results if meta["status"] == "failed"]
+    malformed = [meta for meta in failures if "JSONDecodeError" in str(meta.get("error", ""))]
+    print(f"Remaining malformed JSON failures: {len(malformed)}")
+    for meta in malformed:
+        print(f"- {Path(meta['source_file']).name}: {meta.get('error', 'JSONDecodeError')}")
+
+    warnings = classification_warnings(extracted_entries)
+    safe = not failures and not conflicts and not warnings
+    print(f"Safe for real ingestion: {'yes' if safe else 'no; resolve extraction failures, conflicts, or classification warnings first'}")
+
+
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description="Ingest user career source documents into the OKF knowledge base.")
     parser.add_argument("--source-dir", default=None, help="Override the source directory containing career documents.")
     parser.add_argument("--knowledge-dir", default=None, help="Override the directory where OKF knowledge records and the manifest are stored.")
@@ -944,7 +1186,7 @@ def main() -> None:
         try:
             source_info, records = ingest_document(path, read_only)
             results.append((source_info, records))
-            print(f"✓ Extracted information from {path.name}")
+            print(f"✓ Extracted information from {path.name} ({len(records)} normalized records)")
         except (Exception, KeyboardInterrupt) as exc:  # pragma: no cover - behavior is intentionally resilient
             timeout_seconds = DEFAULT_LLM_TIMEOUT_SECONDS
             try:
@@ -976,6 +1218,7 @@ def main() -> None:
         print_record_preview(entries)
         print_duplicate_analysis(entries)
         print_classification_warnings(entries)
+        print_canonical_analysis(results, entries)
 
     manifest = json.loads(json.dumps(original_manifest))
     if not read_only:
