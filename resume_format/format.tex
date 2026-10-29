@@ -1,0 +1,207 @@
+%%%%
+% Akshat Sharma - AI Internship Resume
+%%%%
+
+\documentclass[letterpaper,10pt]{article}
+
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{fontawesome5}
+\usepackage{multicol}
+\usepackage{bookmark}
+\usepackage{lastpage}
+
+\usepackage{CormorantGaramond}
+\usepackage{charter}
+
+\usepackage{xcolor}
+\definecolor{accentTitle}{HTML}{000000}
+\definecolor{accentText}{HTML}{000000}
+\definecolor{accentLine}{HTML}{000000}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\urlstyle{same}
+
+\addtolength{\oddsidemargin}{-0.7in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1.19in}
+\addtolength{\topmargin}{-0.7in}
+\addtolength{\textheight}{1.4in}
+
+\setlength{\multicolsep}{-3.0pt}
+\setlength{\columnsep}{-1pt}
+\setlength{\tabcolsep}{0pt}
+\setlength{\footskip}{3.7pt}
+\raggedbottom
+\raggedright
+
+\input{glyphtounicode}
+\pdfgentounicode=1
+
+\newcommand{\documentTitle}[2]{
+  \begin{center}
+    {\Huge\color{accentTitle} #1}
+    \vspace{10pt}
+    {\color{accentLine} \hrule}
+    \vspace{2pt}
+    \footnotesize{#2}
+    \vspace{2pt}
+    {\color{accentLine} \hrule}
+  \end{center}
+}
+
+\titleformat{\section}{
+  \vspace{-5pt}
+  \color{accentText}
+  \raggedright\large\bfseries
+}{}{0em}{}[\color{accentLine}\titlerule]
+
+\newcommand{\tinysection}[1]{
+  \phantomsection
+  \addcontentsline{toc}{section}{#1}
+  {\large{\bfseries\color{accentText}#1} {\color{accentLine} |}}
+}
+
+\newcommand{\heading}[2]{
+  \hspace{10pt}#1\hfill#2\\
+}
+\newcommand{\headingBf}[2]{
+  \heading{\textbf{#1}}{\textbf{#2}}
+}
+\newcommand{\headingIt}[2]{
+  \heading{\textit{#1}}{\textit{#2}}
+}
+
+\newenvironment{resume_list}{
+  \vspace{-7pt}
+  \begin{itemize}[itemsep=-2px, parsep=1pt, leftmargin=30pt]
+}{
+  \end{itemize}
+}
+
+\newcommand{\itemTitle}[1]{
+  \item[] \underline{#1}\vspace{4pt}
+}
+
+\renewcommand\labelitemi{--}
+
+%===============================%
+% Akshat Sharma - AI Focus      %
+%===============================%
+
+\begin{document}
+
+  \documentTitle{Akshat Sharma}{
+    \href{tel:9873236546}{
+      \raisebox{-0.05\height} \faPhone\ 9873236546} ~ | ~
+    \href{mailto:akshat12185@gmail.com}{
+      \raisebox{-0.15\height} \faEnvelope\ akshat12185@gmail.com} ~ | ~
+    \href{https://www.linkedin.com/in/akshat-sharma-047a8b290/}{
+      \raisebox{-0.15\height} \faLinkedin\ Akshat LinkedIn} ~ | ~
+    \href{https://github.com/Stormn13}{
+      \raisebox{-0.15\height} \faGithub\ github.com/Akshat}
+  }
+  %-----------%
+  % Education %
+  %-----------%
+
+  \section{Education}
+
+  \headingBf{VIPS-TC}{2024 -- 2028}
+  \headingIt{BTech in Industrial Internet of Things}{}
+
+  %--------%
+  % Skills %
+  %--------%
+
+  \section{Skills}
+
+  \begin{multicols}{2}
+    \begin{itemize}[leftmargin=15pt, itemsep=4pt, parsep=0pt, topsep=2pt]
+      \item[--] \textbf{AI / ML:} Computer Vision, YOLOv5, Roboflow
+      \item[--] \textbf{Languages:} Python, GDScript, C, Bash, HTML/CSS
+      \item[--] \textbf{Data/ Tools:} Kaggle, Git, Linux Systems
+      \item[--] \textbf{Web/ Deploy:} Next.js 15, TailwindCSS, Vercel
+    \end{itemize}
+  \end{multicols}
+  %------------%
+  % Experience %
+  %------------%
+
+\section{Experience}
+  \headingBf{Innovative Intelligent Internet of Things}{}
+  \headingIt{IoT Engineer Intern}{}
+  \begin{resume_list}
+    \item[] \textbf{\textit{2nd Internship -- Fire and Spill Detection}} \hfill \textbf{\textit{June -- Aug 2026}}\vspace{4pt}
+    \item Trained two independent \textbf{computer vision models} for real-time fire detection and spill detection from live camera feeds.
+    \item Processed and annotated visual data to optimize model accuracy for dynamic, real-world industrial environments.
+    \item Configured the models to handle continuous video streams, enabling rapid anomaly identification for workplace safety.
+    \vspace{3pt}
+    \item[] \textbf{\textit{1st Internship -- Screw Detection and Forecasting}} \hfill \textbf{\textit{July 2025}}\vspace{4pt}
+    \item Trained a computer vision model (Roboflow) for screw placement detection; built a regression model forecasting daily energy usage from a California housing dataset.
+    \item Utilized Roboflow for image annotation and dataset augmentation to improve the precision of automated quality control checks.
+    \item Analyzed structured tabular data to identify key features for the regression model, optimizing its predictive performance for energy consumption.
+  \end{resume_list}
+  \headingBf{Summer Internship -- IIT Roorkee}{July 2025}
+  \begin{resume_list}
+    \item Completed a 7-day intensive program on \textbf{Cyber Security and AI/ML}, covering ethical hacking, network security, and supervised learning through hands-on labs.
+    \item Applied supervised learning algorithms to structured datasets in lab environments to reinforce predictive modeling concepts.
+  \end{resume_list}
+  %----------%
+  % Projects %
+  %----------%
+
+  \section{Projects}
+
+  \headingBf{Cravix -- AI Recipe Transformation App}{May 2026}
+  \headingIt{Next.js 15, TypeScript, Gemini 2.0 Flash, TailwindCSS}{}
+  \begin{resume_list}
+    \item AI-powered app transforming cravings into healthier alternatives via dynamic goal generation and tradeoff sliders; built resilient API retry logic with mock-data fallback; deployed on Vercel.
+  \end{resume_list}
+
+  \headingBf{SIH -- Cleared university-level hackathon}{2025}
+  \headingIt{Slope Instability Prediction Pipeline}{}
+  \begin{resume_list}
+    \item Built an \textbf{ML pipeline} for real-time slope instability prediction from vibration, moisture, and pressure sensor data; automated SMS/Email/onsite alerts on threshold breach.
+  \end{resume_list}
+
+  \headingBf{Real-Time Document Dependency Graph}{October 2025}
+  \begin{resume_list}
+    \item Built a Python file-system watcher that triggers live dependency graph updates, automating multi-document impact analysis for a team of 5.
+  \end{resume_list}
+
+  %---------------%
+  % Participation %
+  %---------------%
+
+  \section{Participation \& Competitions}
+
+  \headingBf{Cravix -- AMD Slingshot Ideathon -- 3rd Place}{May 2026}
+  \begin{resume_list}
+    \item Awarded 3rd place at an AMD-sponsored ideathon for Cravix; judged on product vision, real-world AI integration, and UI polish.
+  \end{resume_list}
+
+  %-------------------------%
+  % Position of Responsibility %
+  %-------------------------%
+
+  \section{Position of Responsibility}
+
+  \headingBf{Technical Lead -- Game Veda (Game Dev Club, VIPS)}{2024 -- Present}
+  \begin{resume_list}
+    \item Mentors junior developers and serves as technical reviewer for the college's game development club.
+  \end{resume_list}
+
+   \headingBf{Operations Lead -- Entrepreneurship Cell}{2025}
+  \begin{resume_list}
+    \item Coordinated event operations, managed logistics, and streamlined team workflows to ensure smooth execution of club initiatives.
+  \end{resume_list}
+
+\end{document}

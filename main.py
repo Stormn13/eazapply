@@ -28,5 +28,5 @@ initial_State: ResumeState = {
     'jd_link' : "https://www.linkedin.com/jobs/view/4471337817/",
 }
 final_state = workflow.invoke(initial_State)
-print(final_state)
+print(final_state['resume_text'])
 
