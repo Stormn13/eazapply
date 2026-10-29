@@ -16,9 +16,11 @@ def format_docs(documents):
 
 def jd_to_resume(state: ResumeState):
     data_path = Path(__file__).resolve().parents[1] / "user_data"
+    generated_path = data_path / "generated"
     docs = [
         doc
         for path in sorted(data_path.rglob("*.pdf"))
+        if not path.is_relative_to(generated_path)
         for doc in PyPDFLoader(str(path)).load()
         if doc.page_content.strip()
     ]

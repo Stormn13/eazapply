@@ -74,8 +74,14 @@ class AtsWorkflowTests(unittest.TestCase):
         self.assertIn("Current draft", captured["human"])
         self.assertIn("Bring Python project experience forward", captured["human"])
         pdf_dir = Path(draft_node.__file__).resolve().parents[1] / "user_data"
-        for pdf_path in pdf_dir.rglob("*.pdf"):
+        source_pdf_paths = [
+            path
+            for path in pdf_dir.rglob("*.pdf")
+            if not path.is_relative_to(pdf_dir / "generated")
+        ]
+        for pdf_path in source_pdf_paths:
             self.assertIn(f"[Source resume: {pdf_path.name}]", captured["human"])
+        self.assertNotIn("software-engineer-intern.pdf", captured["human"])
 
 
 class LatexWorkflowTests(unittest.TestCase):
