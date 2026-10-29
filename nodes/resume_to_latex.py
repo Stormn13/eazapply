@@ -11,6 +11,7 @@ ROOT_PATH = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = ROOT_PATH / "resume_format" / "format.tex"
 OUTPUT_PATH = ROOT_PATH / "user_data" / "generated"
 BODY_MARKER = r"\begin{document}"
+FILENAME_WORD_PATTERN = re.compile(r"[A-Za-z0-9]+")
 
 
 def _extract_document_parts(template: str) -> tuple[str, str]:
@@ -39,10 +40,60 @@ def _clean_latex_body(content: str) -> str:
     return body
 
 
+def _generate_filename_stem(job_description: str) -> str:
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "Give the job description a concise filename label using exactly 2 or 3 words. "
+            "Use the role or job title, not a company name. Return only the words, with no "
+            "quotes, punctuation, or explanation."
+        ),
+        ("human", "Job description:\n{job_description}"),
+    ])
+    label = (prompt | llm7_model | StrOutputParser()).invoke({
+        "job_description": job_description,
+    })
+    words = FILENAME_WORD_PATTERN.findall(label)
+    if not 2 <= len(words) <= 3:
+        raise ValueError(
+            "LLM7 must return a 2- or 3-word job title for the resume filename; "
+            f"received {label!r}."
+        )
+    stem = "-".join(word.lower() for word in words)
+    if stem.upper() in {"CON", "PRN", "AUX", "NUL"} or re.fullmatch(r"(COM|LPT)[1-9]", stem.upper()):
+        stem = f"resume-{stem}"
+    return stem
+
+
+def _write_unique_latex(stem: str, latex: str) -> Path:
+    OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+    suffix = 1
+    while True:
+        candidate_stem = stem if suffix == 1 else f"{stem}-{suffix}"
+        existing_stems = {
+            path.stem.casefold()
+            for path in OUTPUT_PATH.iterdir()
+            if path.is_file()
+        }
+        if candidate_stem.casefold() in existing_stems:
+            suffix += 1
+            continue
+
+        latex_path = OUTPUT_PATH / f"{candidate_stem}.tex"
+        try:
+            with latex_path.open("x", encoding="utf-8") as latex_file:
+                latex_file.write(latex)
+        except FileExistsError:
+            suffix += 1
+            continue
+        return latex_path
+
+
 def resume_to_latex(state: ResumeState) -> dict[str, str]:
     resume = state.get("best_resume_text") or state.get("resume_text")
-    if not resume:
-        raise ValueError("LaTeX generation requires a scored resume.")
+    job_description = state.get("jd")
+    if not resume or not job_description:
+        raise ValueError("LaTeX generation requires both a scored resume and job description.")
     if not TEMPLATE_PATH.is_file():
         raise FileNotFoundError(f"Resume format template not found: {TEMPLATE_PATH}")
 
@@ -70,7 +121,6 @@ def resume_to_latex(state: ResumeState) -> dict[str, str]:
     })
     latex = f"{preamble}\n\n{BODY_MARKER}\n{_clean_latex_body(body)}\n\n{document_end}\n"
 
-    OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-    latex_path = OUTPUT_PATH / "resume.tex"
-    latex_path.write_text(latex, encoding="utf-8")
+    filename_stem = _generate_filename_stem(job_description)
+    latex_path = _write_unique_latex(filename_stem, latex)
     return {"latex_path": str(latex_path)}
