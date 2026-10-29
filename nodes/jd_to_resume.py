@@ -24,6 +24,8 @@ def jd_to_resume(state: ResumeState):
     ]
     if not docs:
         raise FileNotFoundError(f"No readable resume PDFs found under {data_path}")
+    current_resume = state.get("resume_text", "")
+    feedback = state.get("ats_feedback", [])
 
     prompt = ChatPromptTemplate.from_messages([
         (
@@ -33,13 +35,17 @@ def jd_to_resume(state: ResumeState):
             "employers, job titles, projects, technologies, achievements, or metrics. Omit details "
             "that are not supported by the source resumes; never use placeholders. Tailor the "
             "selection and wording to the job description, but do not claim a skill or experience "
-            "unless a source resume supports it. Return only the finished resume. Do not include "
+            "unless a source resume supports it. When revising a draft, preserve accurate facts "
+            "and apply only feedback supported by the source resumes. Return only the finished "
+            "resume. Do not include "
             "an introduction, analysis, match table, assumptions, or follow-up advice."
         ),
         (
             "human",
             "Job description:\n{job_description}\n\n"
             "Source resumes:\n{source_resumes}\n\n"
+            "Current draft (empty on first pass):\n{current_resume}\n\n"
+            "ATS feedback to address when supported by the source resumes:\n{ats_feedback}\n\n"
             "Produce one concise, job-tailored resume based on these source resumes."
         ),
     ])
@@ -53,6 +59,11 @@ def jd_to_resume(state: ResumeState):
     response = chain.invoke({
         "source_resumes": format_docs(docs),
         "job_description": state["jd"],  # type: ignore
+        "current_resume": current_resume,
+        "ats_feedback": "\n".join(f"- {item}" for item in feedback) or "None; create the first draft.",
     })
 
-    return {"resume_text": response}
+    return {
+        "resume_text": response,
+        "resume_iteration": state.get("resume_iteration", 0) + 1,
+    }
