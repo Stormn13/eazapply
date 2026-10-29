@@ -5,3 +5,4 @@ class ResumeState(TypedDict):
     error_code : NotRequired[int]
     raw_website_text : NotRequired[str]
     jd: NotRequired[str]
+    resume_text: NotRequired[str]
