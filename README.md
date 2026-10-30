@@ -19,6 +19,10 @@ The revision loop stops when the ATS-style score reaches **9.5/10**, the score i
 
 If LaTeX compilation fails, EazApply asks LLM7 to repair the source and retries up to two times. If compilation still fails, the `.tex` and compiler `.log` are retained for troubleshooting.
 
+## YouTube Demo
+
+**YouTube link:** _Coming soon._
+
 ## Requirements
 
 - Python 3.10 or later
@@ -100,6 +104,20 @@ user_data/generated/
 ```
 
 If a name already exists, a numeric suffix is added (for example `machine-learning-intern-2.pdf`) instead of overwriting existing output. Generated artifacts are excluded from Git.
+
+## Screenshots
+
+Generated resume PDF using synthetic demo data:
+
+![EazApply generated resume demo](docs/screenshots/eazapply-demo-1.png)
+
+Terminal output from a successful end-to-end run:
+
+![EazApply terminal workflow output, first part](docs/screenshots/eazapply-terminal-run-1.png)
+
+![EazApply terminal workflow output, final PDF](docs/screenshots/eazapply-terminal-run-2.png)
+
+The terminal images show a temporary instrumented copy of the runner using synthetic resume and job data; network and LLM calls were mocked. The repository's `main.py` was not changed.
 
 ## Tests
 
