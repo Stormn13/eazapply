@@ -1,5 +1,7 @@
 # EazApply
 
+[Watch the YouTube demo](https://www.youtube.com/watch?v=4bEn4I3vJm8)
+
 EazApply tailors a resume to a job description, iteratively reviews the draft against the role, and generates a formatted PDF. It uses the LLM7 API for resume drafting, ATS-style scoring, LaTeX formatting, and limited LaTeX repair.
 
 ## How it works
@@ -18,10 +20,6 @@ flowchart LR
 The revision loop stops when the ATS-style score reaches **9.5/10**, the score improves by less than **0.1**, the score regresses, or the workflow has generated **five drafts**. The highest-scoring draft is used for final formatting.
 
 If LaTeX compilation fails, EazApply asks LLM7 to repair the source and retries up to two times. If compilation still fails, the `.tex` and compiler `.log` are retained for troubleshooting.
-
-## YouTube Demo
-
-**YouTube link:** _Coming soon._
 
 ## Requirements
 
